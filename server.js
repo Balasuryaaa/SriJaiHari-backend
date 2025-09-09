@@ -21,9 +21,9 @@ connectDB().catch((err) => {
 
 // Routes
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
-app.use('/api/admin', adminRoutes);
-app.use('/api/products', productRoutes);
-app.use('/api/enquiries', enquiryRoutes);
+app.use('/admin', adminRoutes);
+app.use('/products', productRoutes);
+app.use('/enquiries', enquiryRoutes);
 
 // ✅ Do NOT app.listen here – Vercel will handle it
 export default app;
