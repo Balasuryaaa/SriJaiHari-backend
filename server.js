@@ -30,17 +30,7 @@ const apiLimiter = rateLimit({
 });
 app.use('/api/', apiLimiter);
 
-// ─── Routes ─────────────────────────────────────────────────────────────────
-app.get('/health', async (_req, res) => {
-  const dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
-  res.json({ status: 'ok', database: dbStatus, env: process.env.NODE_ENV });
-});
-app.use('/admin', adminRoutes);
-app.use('/products', productRoutes);
-app.use('/enquiries', enquiryRoutes);
-app.use('/chat', chatRoutes);
-
-// ─── Startup Logic (Local vs Vercel) ─────────────────────────────────────────
+// ─── Startup Logic & Database Middleware ────────────────────────────────────
 const PORT = process.env.PORT || 8070;
 
 const initDB = async () => {
@@ -65,6 +55,16 @@ if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
     }
   });
 }
+
+// ─── Routes ─────────────────────────────────────────────────────────────────
+app.get('/health', async (_req, res) => {
+  const dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
+  res.json({ status: 'ok', database: dbStatus, env: process.env.NODE_ENV });
+});
+app.use('/admin', adminRoutes);
+app.use('/products', productRoutes);
+app.use('/enquiries', enquiryRoutes);
+app.use('/chat', chatRoutes);
 
 export default app;
 
