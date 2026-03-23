@@ -2,11 +2,11 @@ import Enquiry from '../models/Enquiry.js';
 
 export async function createEnquiry(req, res) {
 	try {
-		const { name, email, message } = req.body;
-		if (!name || !email || !message) {
-			return res.status(400).json({ message: 'name, email and message are required' });
+		const { name, email, phone, message } = req.body;
+		if (!name || !email || !phone || !message) {
+			return res.status(400).json({ message: 'name, email, phone and message are required' });
 		}
-		const enquiry = new Enquiry({ name, email, message });
+		const enquiry = new Enquiry({ name, email, phone, message });
 		await enquiry.save();
 		return res.status(201).json(enquiry);
 	} catch (error) {

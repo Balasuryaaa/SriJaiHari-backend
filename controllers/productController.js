@@ -3,7 +3,7 @@ import { uploadFiles } from '../middleware/uploadMiddleware.js';
 
 export const createProduct = async (req, res) => {
   try {
-    const { name, details } = req.body;
+    const { name, model, details } = req.body;
 
     if (!name || !details) {
       return res.status(400).json({ message: 'Name and details are required.' });
@@ -20,6 +20,7 @@ export const createProduct = async (req, res) => {
     // Create and save new Product
     const product = new Product({
       name,
+      model,
       details,
       images: imageUrls,
       videos: videoUrls,
