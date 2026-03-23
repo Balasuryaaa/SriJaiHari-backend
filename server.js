@@ -47,22 +47,60 @@ const io = new Server(httpServer, {
 
 let adminSocketId = null;
 io.on('connection', (socket) => {
-  socket.on('admin:join', () => { adminSocketId = socket.id; });
-  socket.on('user:join', async ({ roomId }) => {
+  socket.on('admin:join', () => { 
+    adminSocketId = socket.id; 
+    console.log('Admin joined chat');
+  });
+  
+  socket.on('user:join', async ({ roomId, userName }) => {
     socket.join(roomId);
-    const history = await ChatMessage.find({ roomId }).sort({ createdAt: 1 }).limit(50);
-    socket.emit('chat:history', history);
+    socket.data.userName = userName || 'Customer';
+    socket.data.roomId = roomId;
+    
+    try {
+      const history = await ChatMessage.find({ roomId }).sort({ timestamp: 1 }).limit(50);
+      socket.emit('chat:history', history);
+    } catch (err) {
+      console.error('Error fetching history:', err);
+    }
   });
-  socket.on('user:message', async ({ roomId, text }) => {
-    const chatMsg = new ChatMessage({ roomId, text, sender: 'user' });
-    await chatMsg.save();
-    io.to(roomId).emit('chat:message', chatMsg);
-    if (adminSocketId) io.to(adminSocketId).emit('chat:admin_alert', { roomId, text });
+
+  socket.on('user:message', async (data) => {
+    // Fallback if client doesn't send roomId inside data, it takes from socket
+    const roomId = data.roomId || socket.data.roomId;
+    const text = data.text;
+    const userName = socket.data.userName || 'Customer';
+
+    try {
+      const chatMsg = new ChatMessage({ 
+        roomId, 
+        text, 
+        sender: 'user',
+        userName: userName,
+        senderName: userName
+      });
+      await chatMsg.save();
+      io.to(roomId).emit('chat:message', chatMsg);
+      if (adminSocketId) io.to(adminSocketId).emit('chat:admin_alert', { roomId, text, userName });
+    } catch (err) {
+      console.error('Error saving user message:', err);
+    }
   });
+
   socket.on('admin:message', async ({ roomId, text }) => {
-    const chatMsg = new ChatMessage({ roomId, text, sender: 'admin' });
-    await chatMsg.save();
-    io.to(roomId).emit('chat:message', chatMsg);
+    try {
+      const chatMsg = new ChatMessage({ 
+        roomId, 
+        text, 
+        sender: 'admin',
+        userName: 'Admin',
+        senderName: 'SJH Consultant'
+      });
+      await chatMsg.save();
+      io.to(roomId).emit('chat:message', chatMsg);
+    } catch (err) {
+      console.error('Error saving admin message:', err);
+    }
   });
 });
 
