@@ -7,10 +7,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import mongoose from 'mongoose';
 import connectDB from './config/db.js';
 import adminRoutes from './routes/adminRoutes.js';
 import productRoutes from './routes/productRoutes.js';
 import enquiryRoutes from './routes/enquiryRoutes.js';
+import ChatMessage from './models/ChatMessage.js';
 
 dotenv.config();
 
@@ -20,181 +22,84 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const httpServer = createServer(app);
 
-// Security Middlewares
+// ─── Security & Initial Middlewares ───────────────────────────────────────────
 app.use(helmet({ 
   contentSecurityPolicy: false,
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
-// Rate Limiting for API routes
+// Rate Limiting
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 200, // limit each IP to 200 requests per 15 mins
-  message: 'Too many requests from this IP, please try again later'
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  message: 'Too many requests'
 });
 app.use('/api/', apiLimiter);
 
-import ChatMessage from './models/ChatMessage.js';
-
 // ─── Socket.IO ────────────────────────────────────────────────────────────────
+// NOTE: On Vercel Functions, Socket.IO won't persist across requests. 
+// Standard Socket.IO requires a real server (e.g., node server.js).
 const io = new Server(httpServer, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST'],
-  },
+  cors: { origin: '*', methods: ['GET', 'POST'] },
 });
 
 let adminSocketId = null;
-
 io.on('connection', (socket) => {
-  console.log(`[Chat] Socket connected: ${socket.id}`);
-
-  // ── Admin joins ──────────────────────────────────────────────────────────────
-  socket.on('admin:join', async () => {
-    adminSocketId = socket.id;
-    socket.join('admin-room');
-    console.log('[Chat] Admin connected:', socket.id);
-
-    // Fetch existing unique rooms from DB
-    try {
-      const uniqueRooms = await ChatMessage.aggregate([
-        { $sort: { timestamp: -1 } },
-        { 
-          $group: { 
-            _id: '$roomId', 
-            userName: { $first: '$userName' },
-            lastMessage: { $first: '$text' },
-            timestamp: { $first: '$timestamp' }
-          }
-        },
-        { $sort: { timestamp: -1 } }
-      ]);
-      
-      const rooms = await Promise.all(uniqueRooms.map(async (r) => {
-        const messages = await ChatMessage.find({ roomId: r._id }).sort({ timestamp: 1 }).limit(100);
-        return { roomId: r._id, userName: r.userName, messages };
-      }));
-
-      socket.emit('admin:rooms', rooms);
-    } catch (err) {
-      console.error('[Chat] Error fetching rooms:', err);
-    }
-  });
-
-  // ── User joins (or rejoins) a chat room ─────────────────────────────────────
-  socket.on('user:join', async ({ roomId, userName }) => {
+  socket.on('admin:join', () => { adminSocketId = socket.id; });
+  socket.on('user:join', async ({ roomId }) => {
     socket.join(roomId);
-    console.log(`[Chat] User "${userName}" joined room ${roomId}`);
-
-    // Fetch history from DB
-    try {
-      const history = await ChatMessage.find({ roomId }).sort({ timestamp: 1 }).limit(100);
-      socket.emit('chat:history', history);
-
-      // Notify admin if online
-      if (adminSocketId) {
-        io.to(adminSocketId).emit('admin:user-joined', {
-          roomId,
-          userName: userName || (history[0]?.userName) || 'Guest',
-          messages: history
-        });
-      }
-    } catch (err) {
-      console.error('[Chat] Error fetching history:', err);
-    }
+    const history = await ChatMessage.find({ roomId }).sort({ createdAt: 1 }).limit(50);
+    socket.emit('chat:history', history);
   });
-
-  // ── User sends message ───────────────────────────────────────────────────────
   socket.on('user:message', async ({ roomId, text }) => {
-    try {
-      // Find latest message to get the correct userName
-      const lastMsg = await ChatMessage.findOne({ roomId }).sort({ timestamp: -1 });
-      const uName = lastMsg ? lastMsg.userName : 'Guest';
-
-      const msg = new ChatMessage({
-        roomId,
-        userName: uName,
-        sender: 'user',
-        senderName: uName,
-        text,
-        timestamp: new Date().toISOString(),
-      });
-      await msg.save();
-
-      // Deliver to user & admin
-      io.to(roomId).emit('chat:message', msg);
-      if (adminSocketId) {
-        io.to(adminSocketId).emit('chat:message', { ...msg.toObject(), roomId });
-      }
-    } catch (err) {
-      console.error('[Chat] User message error:', err);
-    }
+    const chatMsg = new ChatMessage({ roomId, text, sender: 'user' });
+    await chatMsg.save();
+    io.to(roomId).emit('chat:message', chatMsg);
+    if (adminSocketId) io.to(adminSocketId).emit('chat:admin_alert', { roomId, text });
   });
-
-  // ── Admin sends message ──────────────────────────────────────────────────────
   socket.on('admin:message', async ({ roomId, text }) => {
-    try {
-      const lastMsg = await ChatMessage.findOne({ roomId }).sort({ timestamp: -1 });
-      const uName = lastMsg ? lastMsg.userName : 'Guest';
-
-      const msg = new ChatMessage({
-        roomId,
-        userName: uName,
-        sender: 'admin',
-        senderName: 'Support',
-        text,
-        timestamp: new Date().toISOString(),
-      });
-      await msg.save();
-
-      // Deliver to user in that room & echo back to admin UI
-      io.to(roomId).emit('chat:message', msg);
-      socket.emit('chat:message', { ...msg.toObject(), roomId });
-    } catch (err) {
-      console.error('[Chat] Admin message error:', err);
-    }
-  });
-
-  // ── Disconnect ───────────────────────────────────────────────────────────────
-  socket.on('disconnect', () => {
-    if (socket.id === adminSocketId) {
-      adminSocketId = null;
-      console.log('[Chat] Admin disconnected');
-    }
-    console.log(`[Chat] Socket disconnected: ${socket.id}`);
+    const chatMsg = new ChatMessage({ roomId, text, sender: 'admin' });
+    await chatMsg.save();
+    io.to(roomId).emit('chat:message', chatMsg);
   });
 });
 
-// ─── Express Middleware ────────────────────────────────────────────────────────
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-
-// ─── Routes ──────────────────────────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+// ─── Routes ─────────────────────────────────────────────────────────────────
+app.get('/health', async (_req, res) => {
+  const dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
+  res.json({ status: 'ok', database: dbStatus, env: process.env.NODE_ENV });
+});
 app.use('/admin', adminRoutes);
 app.use('/products', productRoutes);
 app.use('/enquiries', enquiryRoutes);
 
-// ─── Start Server (local dev vs Vercel) ──────────────────────────────────────
+// ─── Startup Logic (Local vs Vercel) ─────────────────────────────────────────
 const PORT = process.env.PORT || 8070;
 
-if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
-  async function startLocalServer() {
-    try {
-      await connectDB();
-      httpServer.listen(PORT, () => console.log(`✅ Server running on http://localhost:${PORT}`));
-    } catch (err) {
-      console.error('❌ Database connection failed:', err.message);
-      process.exit(1);
-    }
+// Connect once on start or on every serverless invocation if needed
+const initDB = async () => {
+  if (mongoose.connection.readyState !== 1) {
+    await connectDB();
   }
-  startLocalServer();
+};
+
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+  initDB().then(() => {
+    httpServer.listen(PORT, () => console.log(`✅ Local Server: http://localhost:${PORT}`));
+  });
 } else {
-  // Production / Vercel: Connect DB once when function loads
-  connectDB().catch(err => console.error('DB Init Error:', err.message));
+  // Production middleware to ensure DB is connected before any route
+  app.use(async (req, res, next) => {
+    try {
+      await initDB();
+      next();
+    } catch (err) {
+      console.error('DB Middleware Error:', err.message);
+      res.status(500).json({ error: 'Database connection failed' });
+    }
+  });
 }
 
-export { app, httpServer };
 export default app;
